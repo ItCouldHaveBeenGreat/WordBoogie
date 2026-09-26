@@ -1,0 +1,43 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { randomUUID, randomBytes } from 'node:crypto';
+import { createService } from '../services/hosted/service.mjs';
+import { dynamoStore } from '../services/hosted/dynamo.mjs';
+import { chooseBotAction, seededRandom } from '../packages/engine/index.mjs';
+const endpoint=process.env.DYNAMODB_ENDPOINT;
+if(!endpoint||!['localhost','127.0.0.1','[::1]'].includes(new URL(endpoint).hostname))throw Error('Set DYNAMODB_ENDPOINT to a localhost DynamoDB Local endpoint; this test never accesses AWS.');
+const require=createRequire(new URL('../services/hosted/package.json',import.meta.url));
+const {DynamoDBClient,CreateTableCommand,DeleteTableCommand}=require('@aws-sdk/client-dynamodb'),sdk=require('@aws-sdk/lib-dynamodb');
+
+test('real DynamoDB transactions serialize join/move races and retain idempotency/history',async t=>{
+ const client=new DynamoDBClient({endpoint,region:'us-west-2',credentials:{accessKeyId:'localtest',secretAccessKey:'localtest'}});
+ const table='wordboogie-test-'+randomUUID();
+ await client.send(new CreateTableCommand({TableName:table,BillingMode:'PAY_PER_REQUEST',AttributeDefinitions:[{AttributeName:'pk',AttributeType:'S'},{AttributeName:'sk',AttributeType:'S'},{AttributeName:'botPending',AttributeType:'S'}],KeySchema:[{AttributeName:'pk',KeyType:'HASH'},{AttributeName:'sk',KeyType:'RANGE'}],GlobalSecondaryIndexes:[{IndexName:'PendingBots',KeySchema:[{AttributeName:'botPending',KeyType:'HASH'}],Projection:{ProjectionType:'KEYS_ONLY'}}]}));
+ t.after(async()=>{await client.send(new DeleteTableCommand({TableName:table}));client.destroy();});
+ const store=dynamoStore({client:sdk.DynamoDBDocumentClient.from(client,{marshallOptions:{removeUndefinedValues:true}}),commands:sdk,table});
+ const service=createService({store,frontendUrl:'https://example.github.io/WordBoogie'});
+ const guestToken=randomBytes(24).toString('base64url'),body={guestToken,requestId:randomUUID(),displayName:'Host',playerCount:2,boardSize:5,seatTypes:['human','human'],rules:{permanentDefense:true,exclusiveDefense:true}};
+ const request=(method,path,b,token)=>service.route({method,path,body:b,token,userId:'approved-user'});
+ const created=await request('POST','/games',body);const id=created.game.id,path=`/games/${id}`;
+ assert.deepEqual(await request('POST','/games',body),created);
+ if(process.env.HOSTED_BROWSER==='1') { const {hostedBrowser}=await import('./helpers/hosted-browser.mjs'); await hostedBrowser(store); }
+ const join=displayName=>({guestToken:randomBytes(24).toString('base64url'),requestId:randomUUID(),displayName,inviteToken:created.inviteToken});
+ const a=join('Alice'),b=join('Bob');
+ const joins=await Promise.allSettled([request('POST',path+'/join',a),request('POST',path+'/join',b)]);assert.equal(joins.filter(r=>r.status==='fulfilled').length,1);
+ const started=await request('POST',path+'/start',{requestId:randomUUID(),expectedRevision:1},guestToken);
+ const move={...chooseBotAction(started.game,seededRandom('dynamo')),requestId:randomUUID(),expectedRevision:2};
+ const moves=await Promise.allSettled([request('POST',path+'/actions',move,guestToken),request('POST',path+'/actions',{...move,requestId:randomUUID()},guestToken)]);
+ assert.equal(moves.filter(r=>r.status==='fulfilled').length,1);assert.equal((await service.read(id)).history.length,1);
+ const saved=await store.get({pk:`GAME#${id}`,sk:'STATE'});assert.equal(saved.game.history,undefined);assert.equal(saved.revision,3);
+ for(let i=0;i<3;i++)await store.rate('test',3,1000);
+ await assert.rejects(()=>store.rate('test',3,1000),{code:'RATE_LIMITED'});
+ const botBody={...body,guestToken:randomBytes(24).toString('base64url'),requestId:randomUUID(),seatTypes:['human','bot']};
+ const bots=await request('POST','/games',botBody);const bp=`/games/${bots.game.id}`;
+ await request('POST',bp+'/start',{requestId:randomUUID(),expectedRevision:0},botBody.guestToken);
+ await request('POST',bp+'/actions',{requestId:randomUUID(),expectedRevision:1,type:'pass'},botBody.guestToken);
+ assert.ok((await store.pendingBots()).includes(bots.game.id));
+ await service.bot(bots.game.id);assert.equal((await service.read(bots.game.id)).history.length,2);
+ await store.remove([{pk:`GAME#${id}`,sk:'STATE'}]);await service.cleanup(id);assert.deepEqual(await store.query(`GAME#${id}`,''),[]);
+ await assert.rejects(()=>request('POST','/invites/resolve',{inviteToken:created.inviteToken}),{code:'INVITE_INVALID'});
+});

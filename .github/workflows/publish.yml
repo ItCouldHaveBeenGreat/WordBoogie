@@ -1,0 +1,86 @@
+name: Publish hosted game (manual)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: wordboogie-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      api_url: ${{ steps.outputs.outputs.api_url }}
+      auth_domain: ${{ steps.outputs.outputs.auth_domain }}
+      auth_client_id: ${{ steps.outputs.outputs.auth_client_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run check
+      - run: npm ci --prefix services/hosted
+      - run: npm run test:hosted
+      - run: npm run build:hosted
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install cfn-lint==1.57.0
+      - run: cfn-lint infra/template.json
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-west-2
+      - name: Package and deploy backend
+        env:
+          ARTIFACT_BUCKET: ${{ vars.AWS_ARTIFACT_BUCKET }}
+          CFN_ROLE: ${{ vars.AWS_CFN_ROLE_ARN }}
+          FRONTEND_URL: ${{ vars.FRONTEND_URL }}
+          ALERT_EMAIL: ${{ vars.ALERT_EMAIL }}
+          STACK: wordboogie-production
+        run: |
+          test -n "$ARTIFACT_BUCKET" && test -n "$CFN_ROLE" && test -n "$FRONTEND_URL"
+          aws cloudformation package --template-file infra/template.json --s3-bucket "$ARTIFACT_BUCKET" --s3-prefix wordboogie --output-template-file dist/packaged.json
+          aws cloudformation deploy --template-file dist/packaged.json --stack-name "$STACK" --role-arn "$CFN_ROLE" --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND --parameter-overrides "FrontendUrl=$FRONTEND_URL" "AlertEmailAddress=$ALERT_EMAIL" MonthlyBudget=5 --no-fail-on-empty-changeset
+      - id: outputs
+        run: |
+          url=$(aws cloudformation describe-stacks --stack-name wordboogie-production --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text)
+          echo "api_url=$url" >> "$GITHUB_OUTPUT"
+          domain=$(aws cloudformation describe-stacks --stack-name wordboogie-production --query 'Stacks[0].Outputs[?OutputKey==`AuthDomain`].OutputValue' --output text)
+          client=$(aws cloudformation describe-stacks --stack-name wordboogie-production --query 'Stacks[0].Outputs[?OutputKey==`AuthClientId`].OutputValue' --output text)
+          echo "auth_domain=$domain" >> "$GITHUB_OUTPUT"
+          echo "auth_client_id=$client" >> "$GITHUB_OUTPUT"
+          curl --fail --retry 3 "$url/health"
+  pages:
+    needs: deploy
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.publish.outputs.page_url }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm run build:web
+        env:
+          AUTH_DOMAIN: ${{ needs.deploy.outputs.auth_domain }}
+          AUTH_CLIENT_ID: ${{ needs.deploy.outputs.auth_client_id }}
+          API_URL: ${{ needs.deploy.outputs.api_url }}
+          FRONTEND_URL: ${{ vars.FRONTEND_URL }}
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/web
+      - uses: actions/deploy-pages@v4
+        id: publish

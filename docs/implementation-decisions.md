@@ -1,0 +1,19 @@
+# Local milestone decisions
+
+The first implementation delivers the local game and bots. AWS deployment, cloud adapter tests, and GitHub Pages publication remain later milestones.
+
+- Use Node.js 24 ES modules, built-in HTTP, SQLite, and the Node test runner. The frontend uses native browser modules and CSS. This deliberately replaces the specification's proposed React/TypeScript/CDK scaffold for this milestone, avoiding runtime package installation and cloud credentials. Shared engine and application-service boundaries remain available for later AWS adapters.
+- The local UI defaults to one human and one bot so the first game is immediately playable; invited humans remain configurable. This changes the specification's original human-opponent default.
+- `npm run check` performs JavaScript syntax checking, automated tests, and engine coverage. TypeScript checking, an external linter, frontend compilation, and CDK synthesis do not apply to this dependency-free local implementation. Cloud production requirements in the specification have not been declared complete.
+- Browser verification uses Playwright as an optional development tool. Normal gameplay, unit tests, and API integration tests need no external packages. The browser test command explains setup when Playwright is not installed.
+- Local SQLite stores each game's complete snapshot, including history, in a transactionally updated JSON record. The history endpoint supports pagination, but snapshots also include history. The production DynamoDB adapter and separate history items are not implemented in this milestone.
+- The initial starter dictionary has been replaced by SCOWL release 2026.02.25 (US English, size 60, variant level 1). The 78,659-word filtered artifact, metadata, reproducible extraction script, and upstream copyright are committed. Existing starter-dictionary games upgrade to SCOWL on read and persist that version on their next mutation; accepted history and board letters are preserved.
+- Coverage gates measure the pure engine separately from the API/frontend-model aggregate. Browser DOM rendering is exercised through Playwright rather than included in Node coverage. Bootstrap scripts are checked through syntax checks, local-server tests, and actual startup. This is not a claim of whole-repository unit coverage.
+
+The full planning specification is retained in `docs/specification.md`. This file records implemented scope and explicit deviations rather than silently changing that baseline.
+
+## Hosted milestone — September 25, 2026
+
+The hosted implementation now uses GitHub Pages plus AWS HTTP API/Lambda/DynamoDB in us-west-2. Native SAM/CloudFormation JSON replaces the proposed CDK scaffold without changing the serverless architecture. Runtime SDK dependencies are isolated in services/hosted so localhost still needs none. Local SQLite and hosted application adapters share the pure game engine and have separate transaction/HTTP tests. DynamoDB stores history separately, and snapshots return 100 recent turns with pagination. DynamoDB Streams runs bots; a sparse index and five-minute schedule recover pending turns. The Pages frontend uses the same browser code with explicit hosted configuration. Publishing is manual only; the user requested no publication. AWS account bootstrap and the live deployment smoke test remain deployment-time steps. See docs/hosting.md for operating inputs and verified limitations.
+
+Hosted security now requires approved Cognito accounts (administrator-created, no public signup), scoped gateway JWT authentication before database access, and account-bound game seats. API routes are explicit rather than catch-all. HTML/API responses discourage indexing with noindex directives. Localhost remains account-free. See the September 26 security requirements in docs/specification.md and the account-management instructions in docs/hosting.md. No deployment has been performed.

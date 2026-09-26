@@ -1,0 +1,26 @@
+{
+  "name": "wordboogie",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A local multiplayer word territory game with random-word bots",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
+    "local:reset": "node --env-file-if-exists=.env scripts/reset.mjs",
+    "test:unit": "node --test tests/engine.test.mjs tests/frontend.test.mjs tests/local.test.mjs",
+    "test:unit:watch": "node --test --watch tests/engine.test.mjs tests/frontend.test.mjs tests/local.test.mjs",
+    "test:coverage": "node scripts/coverage.mjs",
+    "test:integration": "node --test tests/backend.test.mjs",
+    "test:e2e:local": "node scripts/e2e.mjs",
+    "check": "node scripts/check.mjs",
+    "test:hosted": "node --test tests/hosted.test.mjs tests/auth.test.mjs",
+    "test:dynamo": "node --test tests/dynamo.test.mjs",
+    "build:web": "node scripts/build-web.mjs",
+    "build:hosted": "node scripts/build-hosted.mjs",
+    "infra:generate": "node infra/generate.mjs",
+    "test:e2e:hosted": "node scripts/e2e-hosted.mjs"
+  }
+}

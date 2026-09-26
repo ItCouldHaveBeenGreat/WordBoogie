@@ -1,0 +1,30 @@
+name: Local game checks
+on: [push, pull_request]
+jobs:
+  local:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Install browser test tools
+        if: runner.os == 'Linux'
+        run: |
+          npm install --no-save --package-lock=false playwright
+          npx playwright install --with-deps chromium
+      - name: Browser scenarios
+        if: runner.os == 'Linux'
+        run: npm run test:e2e:local
+      - uses: actions/upload-artifact@v4
+        if: always() && runner.os == 'Linux'
+        with:
+          name: browser-screenshots
+          path: test-results/
+          if-no-files-found: ignore

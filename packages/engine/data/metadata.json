@@ -1,0 +1,24 @@
+{
+  "dictionaryVersion": "scowl-2026.02.25-en-US-60-v1",
+  "project": "SCOWL (en-wl/wordlist)",
+  "release": "rel-2026.02.25",
+  "commit": "7e99edab8e32f9f9ea2b15f249ca8d4d67237410",
+  "sourceArchive": "https://codeload.github.com/en-wl/wordlist/zip/refs/tags/rel-2026.02.25",
+  "sourceArchiveSha256": "98c973dd3326bbc7aa3373a7e6460065d04ed1f9a57b66dc362f80298fbf6fec",
+  "extractionArguments": [
+    "word-list",
+    "60",
+    "A",
+    "1",
+    "--categories=",
+    "--wo-poses=abbr,x",
+    "--wo-pos-categories=nonword,wordpart",
+    "--wo-pos-classes=person,surname,place,name,demonym,trademark,upper,name?,upper?,abbr,abbr?",
+    "--no-word-filter",
+    "--deaccent"
+  ],
+  "postFilter": "ASCII lowercase [a-z]{2,49} before uppercase; sorted unique; LF line endings",
+  "wordCount": 78659,
+  "sha256": "a9d55711d990394017f16d1297c874adbab351b12603112fb3acca1716ac1a73",
+  "copyrightSha256": "090575a131b4260926c7a6b30a90aca0f5db5fbb5c46778e0c5855227bf6ebc3"
+}

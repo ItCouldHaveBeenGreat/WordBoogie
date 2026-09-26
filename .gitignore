@@ -1,0 +1,10 @@
+node_modules/
+.local/
+.env
+coverage/
+test-results/
+playwright-report/
+*.log
+
+dist/
+.aws-sam/

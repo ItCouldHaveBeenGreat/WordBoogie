@@ -1,0 +1,1 @@
+{"name":"wordboogie-hosted","private":true,"type":"module","engines":{"node":">=24"},"dependencies":{"@aws-sdk/client-dynamodb":"3.1141.0","@aws-sdk/lib-dynamodb":"3.1141.0"}}

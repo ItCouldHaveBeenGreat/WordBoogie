@@ -1,0 +1,852 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Transform": "AWS::Serverless-2016-10-31",
+  "Description": "WordBoogie serverless API and persistent background bots",
+  "Parameters": {
+    "LoginDomainPrefix": {
+      "Type": "String",
+      "Default": "wordboogie",
+      "AllowedPattern": "[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?",
+      "Description": "Unique login domain prefix, suffixed with account and region"
+    },
+    "LimitConcurrency": {
+      "Type": "String",
+      "Default": "true",
+      "AllowedValues": [
+        "true",
+        "false"
+      ],
+      "Description": "Reserve/cap Lambda concurrency; disable only when account quota cannot accommodate it"
+    },
+    "FrontendUrl": {
+      "Type": "String",
+      "AllowedPattern": "https://[a-zA-Z0-9.-]+(/[a-zA-Z0-9._~-]+)*",
+      "Description": "Full Pages URL including repository path, without trailing slash"
+    },
+    "AlertEmailAddress": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Optional budget and operations notification email"
+    },
+    "MonthlyBudget": {
+      "Type": "Number",
+      "Default": 5,
+      "MinValue": 1,
+      "Description": "Account-wide monthly budget notification threshold in USD; not a spending cap"
+    }
+  },
+  "Conditions": {
+    "LimitConcurrencyEnabled": {
+      "Fn::Equals": [
+        {
+          "Ref": "LimitConcurrency"
+        },
+        "true"
+      ]
+    },
+    "HasEmail": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "AlertEmailAddress"
+            },
+            ""
+          ]
+        }
+      ]
+    }
+  },
+  "Resources": {
+    "Games": {
+      "Type": "AWS::DynamoDB::Table",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": {
+        "BillingMode": "PAY_PER_REQUEST",
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "pk",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "sk",
+            "AttributeType": "S"
+          },
+          {
+            "AttributeName": "botPending",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "pk",
+            "KeyType": "HASH"
+          },
+          {
+            "AttributeName": "sk",
+            "KeyType": "RANGE"
+          }
+        ],
+        "GlobalSecondaryIndexes": [
+          {
+            "IndexName": "PendingBots",
+            "KeySchema": [
+              {
+                "AttributeName": "botPending",
+                "KeyType": "HASH"
+              }
+            ],
+            "Projection": {
+              "ProjectionType": "KEYS_ONLY"
+            }
+          }
+        ],
+        "PointInTimeRecoverySpecification": {
+          "PointInTimeRecoveryEnabled": true
+        },
+        "SSESpecification": {
+          "SSEEnabled": true
+        },
+        "TimeToLiveSpecification": {
+          "AttributeName": "ttl",
+          "Enabled": true
+        },
+        "StreamSpecification": {
+          "StreamViewType": "NEW_AND_OLD_IMAGES"
+        }
+      }
+    },
+    "HttpApi": {
+      "Type": "AWS::Serverless::HttpApi",
+      "Properties": {
+        "StageName": "$default",
+        "DefaultRouteSettings": {
+          "ThrottlingBurstLimit": 20,
+          "ThrottlingRateLimit": 10
+        },
+        "Auth": {
+          "DefaultAuthorizer": "ApprovedPlayers",
+          "Authorizers": {
+            "ApprovedPlayers": {
+              "IdentitySource": "$request.header.Authorization",
+              "JwtConfiguration": {
+                "issuer": {
+                  "Fn::Sub": "https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${UserPool}"
+                },
+                "audience": [
+                  {
+                    "Ref": "WebClient"
+                  }
+                ]
+              },
+              "AuthorizationScopes": [
+                "wordboogie/play"
+              ]
+            }
+          }
+        },
+        "CorsConfiguration": {
+          "AllowOrigins": [
+            {
+              "Fn::Join": [
+                "/",
+                [
+                  {
+                    "Fn::Select": [
+                      0,
+                      {
+                        "Fn::Split": [
+                          "/",
+                          {
+                            "Ref": "FrontendUrl"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "Fn::Select": [
+                      1,
+                      {
+                        "Fn::Split": [
+                          "/",
+                          {
+                            "Ref": "FrontendUrl"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "Fn::Select": [
+                      2,
+                      {
+                        "Fn::Split": [
+                          "/",
+                          {
+                            "Ref": "FrontendUrl"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              ]
+            }
+          ],
+          "AllowMethods": [
+            "GET",
+            "POST",
+            "PATCH",
+            "OPTIONS"
+          ],
+          "AllowHeaders": [
+            "Content-Type",
+            "Authorization",
+            "X-Game-Token"
+          ],
+          "MaxAge": 600
+        }
+      }
+    },
+    "Alerts": {
+      "Type": "AWS::SNS::Topic"
+    },
+    "AlertEmail": {
+      "Type": "AWS::SNS::Subscription",
+      "Condition": "HasEmail",
+      "Properties": {
+        "TopicArn": {
+          "Ref": "Alerts"
+        },
+        "Protocol": "email",
+        "Endpoint": {
+          "Ref": "AlertEmailAddress"
+        }
+      }
+    },
+    "DeadLetters": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "MessageRetentionPeriod": 1209600,
+        "SqsManagedSseEnabled": true
+      }
+    },
+    "UserPool": {
+      "Type": "AWS::Cognito::UserPool",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": {
+        "AdminCreateUserConfig": {
+          "AllowAdminCreateUserOnly": true
+        },
+        "UsernameAttributes": [
+          "email"
+        ],
+        "UsernameConfiguration": {
+          "CaseSensitive": false
+        },
+        "AutoVerifiedAttributes": [
+          "email"
+        ],
+        "UserPoolTier": "LITE",
+        "Policies": {
+          "PasswordPolicy": {
+            "MinimumLength": 12,
+            "RequireLowercase": true,
+            "RequireUppercase": true,
+            "RequireNumbers": true,
+            "RequireSymbols": true,
+            "TemporaryPasswordValidityDays": 7
+          }
+        },
+        "AccountRecoverySetting": {
+          "RecoveryMechanisms": [
+            {
+              "Name": "verified_email",
+              "Priority": 1
+            }
+          ]
+        }
+      }
+    },
+    "PlayScope": {
+      "Type": "AWS::Cognito::UserPoolResourceServer",
+      "Properties": {
+        "UserPoolId": {
+          "Ref": "UserPool"
+        },
+        "Identifier": "wordboogie",
+        "Name": "WordBoogie",
+        "Scopes": [
+          {
+            "ScopeName": "play",
+            "ScopeDescription": "Access approved-player games"
+          }
+        ]
+      }
+    },
+    "WebClient": {
+      "Type": "AWS::Cognito::UserPoolClient",
+      "DependsOn": "PlayScope",
+      "Properties": {
+        "UserPoolId": {
+          "Ref": "UserPool"
+        },
+        "GenerateSecret": false,
+        "SupportedIdentityProviders": [
+          "COGNITO"
+        ],
+        "AllowedOAuthFlowsUserPoolClient": true,
+        "AllowedOAuthFlows": [
+          "code"
+        ],
+        "AllowedOAuthScopes": [
+          "openid",
+          "wordboogie/play"
+        ],
+        "CallbackURLs": [
+          {
+            "Fn::Sub": "${FrontendUrl}/"
+          }
+        ],
+        "LogoutURLs": [
+          {
+            "Fn::Sub": "${FrontendUrl}/"
+          }
+        ],
+        "PreventUserExistenceErrors": "ENABLED",
+        "EnableTokenRevocation": true,
+        "AccessTokenValidity": 5,
+        "IdTokenValidity": 5,
+        "RefreshTokenValidity": 1,
+        "TokenValidityUnits": {
+          "AccessToken": "minutes",
+          "IdToken": "minutes",
+          "RefreshToken": "days"
+        },
+        "ExplicitAuthFlows": [
+          "ALLOW_REFRESH_TOKEN_AUTH"
+        ]
+      }
+    },
+    "LoginDomain": {
+      "Type": "AWS::Cognito::UserPoolDomain",
+      "Properties": {
+        "UserPoolId": {
+          "Ref": "UserPool"
+        },
+        "Domain": {
+          "Fn::Sub": "${LoginDomainPrefix}-${AWS::AccountId}-${AWS::Region}"
+        }
+      }
+    },
+    "ApiFunction": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "Runtime": "nodejs24.x",
+        "Architectures": [
+          "arm64"
+        ],
+        "CodeUri": "../dist/lambda/",
+        "MemorySize": 512,
+        "Timeout": 30,
+        "Environment": {
+          "Variables": {
+            "TABLE_NAME": {
+              "Ref": "Games"
+            },
+            "FRONTEND_URL": {
+              "Ref": "FrontendUrl"
+            },
+            "AUTH_ISSUER": {
+              "Fn::Sub": "https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${UserPool}"
+            },
+            "AUTH_CLIENT_ID": {
+              "Ref": "WebClient"
+            }
+          }
+        },
+        "Tracing": "PassThrough",
+        "Handler": "services/hosted/handler.handler",
+        "ReservedConcurrentExecutions": {
+          "Fn::If": [
+            "LimitConcurrencyEnabled",
+            5,
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "dynamodb:GetItem",
+                  "dynamodb:Query",
+                  "dynamodb:PutItem",
+                  "dynamodb:UpdateItem",
+                  "dynamodb:ConditionCheckItem"
+                ],
+                "Resource": {
+                  "Fn::GetAtt": [
+                    "Games",
+                    "Arn"
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "Events": {
+          "Health": {
+            "Type": "HttpApi",
+            "Properties": {
+              "ApiId": {
+                "Ref": "HttpApi"
+              },
+              "Path": "/health",
+              "Method": "GET",
+              "Auth": {
+                "Authorizer": "NONE"
+              }
+            }
+          },
+          "Create": {
+            "Type": "HttpApi",
+            "Properties": {
+              "ApiId": {
+                "Ref": "HttpApi"
+              },
+              "Path": "/games",
+              "Method": "POST"
+            }
+          },
+          "ResolveInvite": {
+            "Type": "HttpApi",
+            "Properties": {
+              "ApiId": {
+                "Ref": "HttpApi"
+              },
+              "Path": "/invites/resolve",
+              "Method": "POST"
+            }
+          },
+          "Snapshot": {
+            "Type": "HttpApi",
+            "Properties": {
+              "ApiId": {
+                "Ref": "HttpApi"
+              },
+              "Path": "/games/{id}",
+              "Method": "GET"
+            }
+          },
+          "History": {
+            "Type": "HttpApi",
+            "Properties": {
+              "ApiId": {
+                "Ref": "HttpApi"
+              },
+              "Path": "/games/{id}/history",
+              "Method": "GET"
+            }
+          },
+          "Join": {
+            "Type": "HttpApi",
+            "Properties": {
+              "ApiId": {
+                "Ref": "HttpApi"
+              },
+              "Path": "/games/{id}/join",
+              "Method": "POST"
+            }
+          },
+          "Lobby": {
+            "Type": "HttpApi",
+            "Properties": {
+              "ApiId": {
+                "Ref": "HttpApi"
+              },
+              "Path": "/games/{id}/lobby",
+              "Method": "PATCH"
+            }
+          },
+          "RotateInvite": {
+            "Type": "HttpApi",
+            "Properties": {
+              "ApiId": {
+                "Ref": "HttpApi"
+              },
+              "Path": "/games/{id}/invite",
+              "Method": "POST"
+            }
+          },
+          "Start": {
+            "Type": "HttpApi",
+            "Properties": {
+              "ApiId": {
+                "Ref": "HttpApi"
+              },
+              "Path": "/games/{id}/start",
+              "Method": "POST"
+            }
+          },
+          "Action": {
+            "Type": "HttpApi",
+            "Properties": {
+              "ApiId": {
+                "Ref": "HttpApi"
+              },
+              "Path": "/games/{id}/actions",
+              "Method": "POST"
+            }
+          }
+        }
+      }
+    },
+    "BotFunction": {
+      "Type": "AWS::Serverless::Function",
+      "Properties": {
+        "Runtime": "nodejs24.x",
+        "Architectures": [
+          "arm64"
+        ],
+        "CodeUri": "../dist/lambda/",
+        "MemorySize": 512,
+        "Timeout": 60,
+        "Environment": {
+          "Variables": {
+            "TABLE_NAME": {
+              "Ref": "Games"
+            },
+            "FRONTEND_URL": {
+              "Ref": "FrontendUrl"
+            },
+            "AUTH_ISSUER": {
+              "Fn::Sub": "https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${UserPool}"
+            },
+            "AUTH_CLIENT_ID": {
+              "Ref": "WebClient"
+            }
+          }
+        },
+        "Tracing": "PassThrough",
+        "Handler": "services/hosted/handler.worker",
+        "ReservedConcurrentExecutions": {
+          "Fn::If": [
+            "LimitConcurrencyEnabled",
+            2,
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "dynamodb:GetItem",
+                  "dynamodb:Query",
+                  "dynamodb:PutItem",
+                  "dynamodb:UpdateItem",
+                  "dynamodb:ConditionCheckItem"
+                ],
+                "Resource": {
+                  "Fn::GetAtt": [
+                    "Games",
+                    "Arn"
+                  ]
+                }
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "dynamodb:BatchWriteItem"
+                ],
+                "Resource": {
+                  "Fn::GetAtt": [
+                    "Games",
+                    "Arn"
+                  ]
+                }
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "dynamodb:Query"
+                ],
+                "Resource": {
+                  "Fn::Sub": "${Games.Arn}/index/PendingBots"
+                }
+              },
+              {
+                "Effect": "Allow",
+                "Action": [
+                  "sqs:SendMessage"
+                ],
+                "Resource": {
+                  "Fn::GetAtt": [
+                    "DeadLetters",
+                    "Arn"
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "Events": {
+          "Recovery": {
+            "Type": "Schedule",
+            "Properties": {
+              "Schedule": "rate(5 minutes)"
+            }
+          },
+          "Changes": {
+            "Type": "DynamoDB",
+            "Properties": {
+              "Stream": {
+                "Fn::GetAtt": [
+                  "Games",
+                  "StreamArn"
+                ]
+              },
+              "StartingPosition": "TRIM_HORIZON",
+              "BatchSize": 1,
+              "MaximumRetryAttempts": 10,
+              "MaximumRecordAgeInSeconds": 86400,
+              "BisectBatchOnFunctionError": true,
+              "DestinationConfig": {
+                "OnFailure": {
+                  "Type": "SQS",
+                  "Destination": {
+                    "Fn::GetAtt": [
+                      "DeadLetters",
+                      "Arn"
+                    ]
+                  }
+                }
+              },
+              "FilterCriteria": {
+                "Filters": [
+                  {
+                    "Pattern": "{\"dynamodb\":{\"Keys\":{\"sk\":{\"S\":[\"STATE\"]}}}}"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "ApiFunctionLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${ApiFunction}"
+        },
+        "RetentionInDays": 14
+      }
+    },
+    "ApiFunctionErrors": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "Namespace": "AWS/Lambda",
+        "MetricName": "Errors",
+        "Dimensions": [
+          {
+            "Name": "FunctionName",
+            "Value": {
+              "Ref": "ApiFunction"
+            }
+          }
+        ],
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": 1,
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ]
+      }
+    },
+    "BotFunctionLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${BotFunction}"
+        },
+        "RetentionInDays": 14
+      }
+    },
+    "BotFunctionErrors": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "Namespace": "AWS/Lambda",
+        "MetricName": "Errors",
+        "Dimensions": [
+          {
+            "Name": "FunctionName",
+            "Value": {
+              "Ref": "BotFunction"
+            }
+          }
+        ],
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": 1,
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ]
+      }
+    },
+    "WorkerLag": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "Namespace": "AWS/Lambda",
+        "MetricName": "IteratorAge",
+        "Dimensions": [
+          {
+            "Name": "FunctionName",
+            "Value": {
+              "Ref": "BotFunction"
+            }
+          }
+        ],
+        "Statistic": "Maximum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": 60000,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ]
+      }
+    },
+    "DeadLetterAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "Namespace": "AWS/SQS",
+        "MetricName": "ApproximateNumberOfMessagesVisible",
+        "Dimensions": [
+          {
+            "Name": "QueueName",
+            "Value": {
+              "Fn::GetAtt": [
+                "DeadLetters",
+                "QueueName"
+              ]
+            }
+          }
+        ],
+        "Statistic": "Maximum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": 1,
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "Alerts"
+          }
+        ]
+      }
+    },
+    "Budget": {
+      "Type": "AWS::Budgets::Budget",
+      "Condition": "HasEmail",
+      "Properties": {
+        "Budget": {
+          "BudgetName": {
+            "Fn::Sub": "${AWS::StackName}-monthly"
+          },
+          "BudgetType": "COST",
+          "TimeUnit": "MONTHLY",
+          "BudgetLimit": {
+            "Amount": {
+              "Ref": "MonthlyBudget"
+            },
+            "Unit": "USD"
+          }
+        },
+        "NotificationsWithSubscribers": [
+          {
+            "Notification": {
+              "NotificationType": "ACTUAL",
+              "ComparisonOperator": "GREATER_THAN",
+              "Threshold": 80,
+              "ThresholdType": "PERCENTAGE"
+            },
+            "Subscribers": [
+              {
+                "SubscriptionType": "EMAIL",
+                "Address": {
+                  "Ref": "AlertEmailAddress"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "UserPoolId": {
+      "Value": {
+        "Ref": "UserPool"
+      }
+    },
+    "AuthClientId": {
+      "Value": {
+        "Ref": "WebClient"
+      }
+    },
+    "AuthDomain": {
+      "Value": {
+        "Fn::Sub": "https://${LoginDomainPrefix}-${AWS::AccountId}-${AWS::Region}.auth.${AWS::Region}.amazoncognito.com"
+      }
+    },
+    "AuthIssuer": {
+      "Value": {
+        "Fn::Sub": "https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${UserPool}"
+      }
+    },
+    "ApiUrl": {
+      "Value": {
+        "Fn::Sub": "https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}"
+      }
+    },
+    "TableName": {
+      "Value": {
+        "Ref": "Games"
+      }
+    },
+    "WorkerFunctionName": {
+      "Value": {
+        "Ref": "BotFunction"
+      }
+    },
+    "DeadLetterQueueUrl": {
+      "Value": {
+        "Ref": "DeadLetters"
+      }
+    }
+  }
+}

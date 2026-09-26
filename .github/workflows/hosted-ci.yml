@@ -1,0 +1,41 @@
+name: Hosted checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  hosted:
+    runs-on: ubuntu-latest
+    services:
+      dynamodb:
+        image: amazon/dynamodb-local:3.1.0
+        ports: ['8000:8000']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --prefix services/hosted
+      - run: npm run test:hosted
+      - run: npm run test:dynamo
+        env:
+          DYNAMODB_ENDPOINT: http://localhost:8000
+      - run: |
+          npm install --no-save --package-lock=false playwright
+          npx playwright install --with-deps chromium
+      - run: npm run test:e2e:hosted
+        env:
+          DYNAMODB_ENDPOINT: http://localhost:8000
+      - run: npm run build:hosted
+      - run: npm run build:web
+        env:
+          AUTH_DOMAIN: https://login.example.com
+          AUTH_CLIENT_ID: exampleclient
+          API_URL: https://api.example.com
+          FRONTEND_URL: https://example.github.io/WordBoogie
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install cfn-lint==1.57.0
+      - run: node infra/generate.mjs
+      - run: cfn-lint infra/template.json
+      - run: git diff --exit-code -- infra/template.json
