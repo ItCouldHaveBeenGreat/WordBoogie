@@ -15,4 +15,5 @@ run(['scripts/coverage.mjs']);
 run(['--test', 'tests/backend.test.mjs']);
 run(['--test', 'tests/hosted.test.mjs', 'tests/auth.test.mjs']);
 run(['infra/generate.mjs']);
+run(['infra/bootstrap.mjs']);
 console.log('\nLocal and hosted application checks passed. AWS deployment is a separate manual step.');

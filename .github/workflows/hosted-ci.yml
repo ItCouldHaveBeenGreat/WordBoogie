@@ -37,5 +37,6 @@ jobs:
           python-version: '3.12'
       - run: pip install cfn-lint==1.57.0
       - run: node infra/generate.mjs
-      - run: cfn-lint infra/template.json
-      - run: git diff --exit-code -- infra/template.json
+      - run: node infra/bootstrap.mjs
+      - run: cfn-lint infra/template.json infra/bootstrap.json
+      - run: git diff --exit-code -- infra/template.json infra/bootstrap.json

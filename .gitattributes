@@ -4,3 +4,5 @@
 # Dictionary artifact checksums are defined over LF bytes on every platform.
 packages/engine/data/* text eol=lf
 apps/web/dictionary-license.txt text eol=lf
+
+*.sh text eol=lf

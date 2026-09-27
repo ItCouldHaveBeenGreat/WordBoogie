@@ -41,13 +41,14 @@ jobs:
         env:
           ARTIFACT_BUCKET: ${{ vars.AWS_ARTIFACT_BUCKET }}
           CFN_ROLE: ${{ vars.AWS_CFN_ROLE_ARN }}
+          RUNTIME_BOUNDARY: ${{ vars.AWS_RUNTIME_BOUNDARY_ARN }}
           FRONTEND_URL: ${{ vars.FRONTEND_URL }}
           ALERT_EMAIL: ${{ vars.ALERT_EMAIL }}
           STACK: wordboogie-production
         run: |
-          test -n "$ARTIFACT_BUCKET" && test -n "$CFN_ROLE" && test -n "$FRONTEND_URL"
+          test -n "$ARTIFACT_BUCKET" && test -n "$CFN_ROLE" && test -n "$RUNTIME_BOUNDARY" && test -n "$FRONTEND_URL"
           aws cloudformation package --template-file infra/template.json --s3-bucket "$ARTIFACT_BUCKET" --s3-prefix wordboogie --output-template-file dist/packaged.json
-          aws cloudformation deploy --template-file dist/packaged.json --stack-name "$STACK" --role-arn "$CFN_ROLE" --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND --parameter-overrides "FrontendUrl=$FRONTEND_URL" "AlertEmailAddress=$ALERT_EMAIL" MonthlyBudget=5 --no-fail-on-empty-changeset
+          aws cloudformation deploy --template-file dist/packaged.json --stack-name "$STACK" --role-arn "$CFN_ROLE" --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND --parameter-overrides "RuntimePermissionsBoundaryArn=$RUNTIME_BOUNDARY" "FrontendUrl=$FRONTEND_URL" "AlertEmailAddress=$ALERT_EMAIL" MonthlyBudget=5 --no-fail-on-empty-changeset
       - id: outputs
         run: |
           url=$(aws cloudformation describe-stacks --stack-name wordboogie-production --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' --output text)

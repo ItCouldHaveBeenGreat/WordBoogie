@@ -3,6 +3,11 @@
   "Transform": "AWS::Serverless-2016-10-31",
   "Description": "WordBoogie serverless API and persistent background bots",
   "Parameters": {
+    "RuntimePermissionsBoundaryArn": {
+      "Type": "String",
+      "AllowedPattern": "arn:[a-z-]+:iam::[0-9]{12}:policy/.+",
+      "Description": "AWS_RUNTIME_BOUNDARY_ARN output of the bootstrap stack"
+    },
     "LoginDomainPrefix": {
       "Type": "String",
       "Default": "wordboogie",
@@ -345,6 +350,9 @@
     "ApiFunction": {
       "Type": "AWS::Serverless::Function",
       "Properties": {
+        "PermissionsBoundary": {
+          "Ref": "RuntimePermissionsBoundaryArn"
+        },
         "Runtime": "nodejs24.x",
         "Architectures": [
           "arm64"
@@ -511,6 +519,9 @@
     "BotFunction": {
       "Type": "AWS::Serverless::Function",
       "Properties": {
+        "PermissionsBoundary": {
+          "Ref": "RuntimePermissionsBoundaryArn"
+        },
         "Runtime": "nodejs24.x",
         "Architectures": [
           "arm64"

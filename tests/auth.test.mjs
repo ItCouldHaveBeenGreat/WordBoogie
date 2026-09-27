@@ -42,3 +42,16 @@ test('template exposes only named routes, admin-only Cognito, scoped JWT authori
  assert.deepEqual(template.Resources.HttpApi.Properties.Auth.Authorizers.ApprovedPlayers.AuthorizationScopes,['wordboogie/play']);
  assert.match(readFileSync('apps/web/index.html','utf8'),/name="robots" content="noindex, nofollow"/);
 });
+test('bootstrap trusts only the production repository and enforces a runtime permissions boundary',()=>{
+ const bootstrap=JSON.parse(readFileSync('infra/bootstrap.json','utf8'));
+ const role=bootstrap.Resources.GitHubDeployRole.Properties;
+ const trust=role.AssumeRolePolicyDocument.Statement[0];
+ assert.equal(trust.Condition.StringEquals['token.actions.githubusercontent.com:aud'],'sts.amazonaws.com');
+ assert.equal(trust.Condition.StringEquals['token.actions.githubusercontent.com:sub']['Fn::Sub'],'repo:${GitHubRepository}:environment:production');
+ const policy=bootstrap.Resources.CloudFormationRole.Properties.Policies[0].PolicyDocument.Statement;
+ const create=policy.find(statement=>statement.Action.includes('iam:CreateRole'));
+ assert.deepEqual(create.Condition.StringEquals['iam:PermissionsBoundary'],{Ref:'RuntimeBoundary'});
+ assert.equal(policy.some(statement=>statement.Action.includes('iam:DeleteRolePermissionsBoundary')),false);
+ const template=JSON.parse(readFileSync('infra/template.json','utf8'));
+ for(const name of ['ApiFunction','BotFunction'])assert.deepEqual(template.Resources[name].Properties.PermissionsBoundary,{Ref:'RuntimePermissionsBoundaryArn'});
+});
